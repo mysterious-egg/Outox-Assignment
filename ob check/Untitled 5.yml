@@ -1,0 +1,30 @@
+info:
+  name: Untitled 5
+  type: http
+
+http:
+  method: POST
+  url: http://localhost:3000/emails/schedule
+  body:
+    type: json
+    data: |-
+      {
+        "recipients": [
+          "test1@example.com",
+          "test2@example.com",
+          "test3@example.com",
+          "test4@example.com",
+          "test5@example.com"
+        ],
+        "subject": "CP6 Concurrency Test",
+        "body": "Testing BullMQ worker concurrency.",
+        "startTime": "2026-08-13T17:19:10+05:30",
+        "delayBetweenEmails": 0
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

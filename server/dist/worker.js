@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Worker } from "bullmq";
 import { prisma } from "./lib/prisma.js";
 import { transporter } from "./lib/mailer.js";
+const workerConcurrency = Number(process.env.WORKER_CONCURRENCY ?? "1");
 const worker = new Worker("email-queue", async (job) => {
     console.log(`Worker received job ${job.id}`);
     const { emailId } = job.data;
@@ -65,6 +66,7 @@ const worker = new Worker("email-queue", async (job) => {
         host: "localhost",
         port: 6379,
     },
+    concurrency: workerConcurrency,
 });
 worker.on("completed", (job) => {
     console.log(`Job ${job.id} completed.`);
@@ -72,4 +74,4 @@ worker.on("completed", (job) => {
 worker.on("failed", (job, error) => {
     console.error(`Job ${job?.id} failed:`, error.message);
 });
-console.log("Email worker is running...");
+console.log(`Email worker is running with concurrency: ${workerConcurrency}...`);
