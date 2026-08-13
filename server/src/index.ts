@@ -1,12 +1,20 @@
 import express from "express";
 import { emailQueue } from "./queue/email.queue.js";
 import { prisma } from "./lib/prisma.js";
-
+import { parseRecipients } from "./utils/recipients.js";
+import multer from "multer";
 const app = express();
 
 const PORT = 3000;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 1 * 1024 * 1024,
+  },
+});
 
 app.use(express.json());
+
 
 app.get("/health", (req, res) => {
   res.json({
@@ -14,6 +22,57 @@ app.get("/health", (req, res) => {
     message: "ReachInbox Scheduler backend is running",
   });
 });
+
+app.post(
+  "/emails/parse",
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: "A CSV or TXT file is required",
+        });
+      }
+
+      const fileName = req.file.originalname.toLowerCase();
+
+      if (
+        !fileName.endsWith(".csv") &&
+        !fileName.endsWith(".txt")
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Only .csv and .txt files are supported",
+        });
+      }
+
+      const fileContents = req.file.buffer.toString("utf-8");
+
+      const recipients = parseRecipients(fileContents);
+
+      if (recipients.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "No valid email addresses were found",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        count: recipients.length,
+        recipients,
+      });
+    } catch (error) {
+      console.error("Failed to parse recipient file:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to parse recipient file",
+      });
+    }
+  }
+);
 
 app.post("/jobs", async (req, res) => {
   const job = await emailQueue.add(
@@ -38,34 +97,67 @@ app.post("/jobs", async (req, res) => {
 app.post("/emails/schedule", async (req, res) => {
   try {
     const {
-      recipient,
+      recipients,
       subject,
       body,
-      scheduledAt,
+      startTime,
+      delayBetweenEmails,
     } = req.body;
 
-    if (!recipient || !subject || !body || !scheduledAt) {
+    if (
+      !recipients ||
+      !Array.isArray(recipients) ||
+      !subject ||
+      !body ||
+      !startTime ||
+      delayBetweenEmails === undefined
+    ) {
       return res.status(400).json({
         success: false,
-        message: "recipient, subject, body, and scheduledAt are required",
+        message:
+          "recipients, subject, body, startTime, and delayBetweenEmails are required",
       });
     }
 
-    const scheduledDate = new Date(scheduledAt);
-
-    if (Number.isNaN(scheduledDate.getTime())) {
+    if (recipients.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "scheduledAt must be a valid date",
+        message: "At least one recipient is required",
       });
     }
 
-    const delay = scheduledDate.getTime() - Date.now();
-
-    if (delay < 0) {
+    if (
+      typeof delayBetweenEmails !== "number" ||
+      delayBetweenEmails < 0
+    ) {
       return res.status(400).json({
         success: false,
-        message: "scheduledAt must be in the future",
+        message: "delayBetweenEmails must be a non-negative number",
+      });
+    }
+
+    const startDate = new Date(startTime);
+
+    if (Number.isNaN(startDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: "startTime must be a valid date",
+      });
+    }
+
+    const parsedRecipients = parseRecipients(recipients.join("\n"));
+
+    if (parsedRecipients.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No valid recipients were provided",
+      });
+    }
+
+    if (startDate.getTime() < Date.now()) {
+      return res.status(400).json({
+        success: false,
+        message: "startTime must be in the future",
       });
     }
 
@@ -82,49 +174,70 @@ app.post("/emails/schedule", async (req, res) => {
       });
     }
 
-    const email = await prisma.email.create({
-      data: {
-        recipient,
-        subject,
-        body,
-        sender: "no-reply@outbox.local",
-        scheduledAt: scheduledDate,
-        status: "SCHEDULED",
-        userId: user.id,
-      },
-    });
+    const createdEmails = [];
 
-    const job = await emailQueue.add(
-      "send-email",
-      {
-        emailId: email.id,
-      },
-      {
-        delay,
+    for (let index = 0; index < parsedRecipients.length; index++) {
+      const recipient = parsedRecipients[index];
+
+      const scheduledDate = new Date(
+        startDate.getTime() +
+          index * delayBetweenEmails * 1000
+      );
+
+      const jobDelay = scheduledDate.getTime() - Date.now();
+
+      if (jobDelay < 0) {
+        return res.status(400).json({
+          success: false,
+          message: "A calculated email time is in the past",
+        });
       }
-    );
 
-    const updatedEmail = await prisma.email.update({
-      where: {
-        id: email.id,
-      },
-      data: {
-        bullmqJobId: job.id,
-      },
-    });
+      const email = await prisma.email.create({
+        data: {
+          recipient,
+          subject,
+          body,
+          sender: "no-reply@outbox.local",
+          scheduledAt: scheduledDate,
+          status: "SCHEDULED",
+          userId: user.id,
+        },
+      });
+
+      const job = await emailQueue.add(
+        "send-email",
+        {
+          emailId: email.id,
+        },
+        {
+          delay: jobDelay,
+        }
+      );
+
+      const updatedEmail = await prisma.email.update({
+        where: {
+          id: email.id,
+        },
+        data: {
+          bullmqJobId: job.id,
+        },
+      });
+
+      createdEmails.push(updatedEmail);
+    }
 
     return res.status(201).json({
       success: true,
-      email: updatedEmail,
-      jobId: job.id,
-      delay,
+      count: createdEmails.length,
+      emails: createdEmails,
     });
   } catch (error) {
-    console.error("Failed to schedule email:", error);
+    console.error("Failed to schedule emails:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Failed to schedule email",
+      message: "Failed to schedule emails",
     });
   }
 });
