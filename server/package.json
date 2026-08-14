@@ -13,7 +13,8 @@
     "test:idempotency": "tsx src/idempotency-test.ts",
     "test:recipients": "tsx src/recipients-test.ts",
     "test:file-parser": "tsx src/file-parser-test.ts",
-    "test:queue": "tsx src/queue-test.ts"
+    "test:queue": "tsx src/queue-test.ts",
+    "test:rate-limit": "tsx src/rate-limit-test.ts"
   },
   "keywords": [],
   "author": "",
